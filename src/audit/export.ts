@@ -18,6 +18,13 @@ export interface Article12Event {
   actor: string;
   /** Structured details of the event. */
   details: Record<string, unknown>;
+  /**
+   * Settlement evidence for payment events, extracted from the record's
+   * `paymentProof` payload field (settlement tx hash, network,
+   * facilitator, settlement time); absent for non-payment events and for
+   * payments recorded without proof.
+   */
+  paymentProof?: Record<string, unknown>;
   prevHash: string;
   hash: string;
 }
@@ -79,15 +86,21 @@ export function exportArticle12Json(log: AuditLog, options: ExportOptions = {}):
       chainVerified: verification.ok,
       verification,
     },
-    events: records.map((rec) => ({
-      seq: rec.seq,
-      dateTime: rec.timestamp,
-      event: rec.actionType,
-      actor: rec.actor,
-      details: rec.payload,
-      prevHash: rec.prevHash,
-      hash: rec.hash,
-    })),
+    events: records.map((rec) => {
+      const proof = rec.payload["paymentProof"];
+      return {
+        seq: rec.seq,
+        dateTime: rec.timestamp,
+        event: rec.actionType,
+        actor: rec.actor,
+        details: rec.payload,
+        ...(typeof proof === "object" && proof !== null && !Array.isArray(proof)
+          ? { paymentProof: proof as Record<string, unknown> }
+          : {}),
+        prevHash: rec.prevHash,
+        hash: rec.hash,
+      };
+    }),
   };
 }
 
@@ -112,9 +125,12 @@ export function exportArticle12Text(log: AuditLog, options: ExportOptions = {}):
   lines.push("");
   lines.push("Events:");
   for (const ev of data.events) {
+    const proofSuffix = ev.paymentProof
+      ? `  proof tx=${String(ev.paymentProof["txHash"])} network=${String(ev.paymentProof["network"])} facilitator=${String(ev.paymentProof["facilitator"])} settledAt=${String(ev.paymentProof["settledAt"])}`
+      : "";
     lines.push(
       `#${String(ev.seq).padStart(4, "0")}  ${ev.dateTime}  ${ev.event}  actor=${ev.actor}  ` +
-        `hash=${ev.hash}  prev=${ev.prevHash}  details=${canonicalJson(ev.details)}`,
+        `hash=${ev.hash}  prev=${ev.prevHash}  details=${canonicalJson(ev.details)}${proofSuffix}`,
     );
   }
   return lines.join("\n") + "\n";

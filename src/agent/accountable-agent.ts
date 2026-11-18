@@ -1,4 +1,5 @@
 import { AuditLog, type AuditRecord, type Clock, type JsonValue } from "../audit/audit-log.js";
+import type { PaymentProofRef } from "../x402/types.js";
 
 /**
  * Who the agent is, for accountability purposes. `ownerRef` is the link to
@@ -48,13 +49,35 @@ export class AccountableAgent {
     return this.perform("identity.attribute_proof_presented", { ...input });
   }
 
-  /** Record an outgoing x402 payment. Amounts are decimal strings. */
-  recordPaymentSent(input: { amount: string; asset: string; to: string; rail: string; sponsored: boolean }): AuditRecord {
+  /**
+   * Record an outgoing x402 payment. Amounts are decimal strings.
+   * `paymentProof` is the settlement-evidence reference (tx hash, network,
+   * facilitator, settlement time); `resource` names what was paid for.
+   * Both land in the payload under those keys, so the Article 12 export
+   * shows the proof next to the action.
+   */
+  recordPaymentSent(input: {
+    amount: string;
+    asset: string;
+    to: string;
+    rail: string;
+    sponsored: boolean;
+    resource?: string;
+    paymentProof?: PaymentProofRef;
+  }): AuditRecord {
     return this.perform("payment.sent", { ...input });
   }
 
   /** Record an incoming x402 payment. Amounts are decimal strings. */
-  recordPaymentReceived(input: { amount: string; asset: string; from: string; rail: string; sponsored: boolean }): AuditRecord {
+  recordPaymentReceived(input: {
+    amount: string;
+    asset: string;
+    from: string;
+    rail: string;
+    sponsored: boolean;
+    resource?: string;
+    paymentProof?: PaymentProofRef;
+  }): AuditRecord {
     return this.perform("payment.received", { ...input });
   }
 }

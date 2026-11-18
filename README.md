@@ -21,7 +21,7 @@ The accountable human behind the agent verifies **once** with a Concordium ident
 | **On-chain anchoring (testnet)** | The audit chain's root hash is anchored via an `AnchorClient`, making the trail tamper-evident and CCDExplorer-verifiable | Interface + local mock client implemented and tested; `ConcordiumAnchorClient` skeleton is config-gated — its gRPC transport lands in the milestone right after the owner's wallet step (see *The anchoring seam*) |
 | **Concordium ID + Verify and Access** | The owner verifies once; the agent logs `identity.attribute_proof_presented` events (proof type + verifier, never identity data) | Modelled in the core (`ownerRef`, action type, demo flow); the live ZK proof flow wires in with the owner's identity-verification step |
 | **Agent Registry + ERC-8004 Agent Card + "Verified by Concordium" badge** | The agent's identity (`AgentIdentity`) carries its home-chain address for the Agent Card link; counterparty badge checks are logged as `registry.badge_checked` | Modelled in the core; live registry registration is a later milestone (needs the owner's testnet wallet) |
-| **x402 payments + sponsored transactions** | Payments are logged as `payment.sent` / `payment.received` with `rail: "x402"` and a `sponsored` flag | Action types and demo flow implemented; live x402 settlement is a later milestone |
+| **x402 payments + sponsored transactions** | Payments are logged as `payment.sent` / `payment.received` with `rail: "x402"` and a `sponsored` flag | Payment flow implemented and tested locally: explicit challenge → sign → retry state machine, server gate with amount/expiry/replay checks, mock + HTTP facilitator clients, and an audited client that writes every settled payment into the hash chain **with its settlement proof** (`paymentProof`), which the Article 12 export surfaces. Live settlement needs deployment config (network/asset/signer) — every component refuses to run unconfigured and lists what is missing; no placeholder addresses anywhere |
 
 ## Quick start
 
@@ -29,7 +29,7 @@ Requires Node.js ≥ 20. Zero runtime dependencies.
 
 ```bash
 npm install
-npm test        # build + full test suite (25 tests)
+npm test        # build + full test suite (39 tests)
 npm run demo    # build + run the demo scenario end to end
 ```
 
@@ -52,7 +52,18 @@ const json = exportArticle12Json(agent.log); // structured, fileable record
 const text = exportArticle12Text(agent.log); // human-readable rendering
 ```
 
-The export carries the system identity (agent + accountable owner reference), the covered period, an integrity block (algorithm, record count, root hash, and the chain-verification verdict), and one event per record. If the chain has been tampered with, `integrity.chainVerified` is `false` and the text rendering states `Chain verification: FAILED` with the failing sequence number — an export never silently vouches for a broken chain.
+The export carries the system identity (agent + accountable owner reference), the covered period, an integrity block (algorithm, record count, root hash, and the chain-verification verdict), and one event per record. Payment events additionally carry a `paymentProof` field — the settlement evidence (transaction hash, network, facilitator, settlement time) recorded with the payment — and the text rendering prints it as a `proof tx=…` suffix, so the filed record shows *proof* of payment, not just a claim. If the chain has been tampered with, `integrity.chainVerified` is `false` and the text rendering states `Chain verification: FAILED` with the failing sequence number — an export never silently vouches for a broken chain.
+
+## The x402 payment layer
+
+`src/x402/` implements the payment flow this project already exercised live against a production x402 API (Blockchain IQ on Base): an unpaid request is answered **402** with payment requirements; the payer signs an **EIP-3009** `transferWithAuthorization` for exactly the required amount — gasless for the payer, a **facilitator** submits and pays the gas — retries with the signed payload in the `X-PAYMENT` header, and the server verifies + settles through the facilitator, returning the settlement proof in the `PAYMENT-RESPONSE` header.
+
+- **`X402PaymentClient`** — the flow as an explicit state machine (`idle → challenge-received → authorization-signed → retrying → settled | failed`, with the trace returned per call). Enforces a `maxAmountPerPayment` spend cap before signing; signing is delegated to an injected `PaymentSigner` — this layer never holds a private key.
+- **`X402PaymentGate`** — the server side: issues challenges and settles incoming payments, checking (in order) header well-formedness, requirement match, exact amount, authorization window, and nonce replay before the facilitator is ever called.
+- **Facilitators** — `MockFacilitatorClient` (deterministic, in-memory, labelled local-simulated) and `HttpFacilitatorClient` (POST /verify + /settle against a real facilitator service, transport injected).
+- **`AuditedPaymentClient`** — the accountability bridge: every settled outgoing payment is appended to the agent's hash chain as `payment.sent` with its `paymentProof`; `recordSettledPaymentReceived` does the same for incoming settlements.
+
+Configuration is contract-enforced, like the anchoring seam: network, asset, recipient and signer all come from deployment configuration, and any missing piece throws `X402NotConfiguredError` listing exactly what is missing. Nothing defaults to a placeholder address. Wiring live settlement after the owner's wallet step is: implement `PaymentSigner` over the agent wallet (viem), point the client at the target network/asset, and give the gate an `HttpFacilitatorClient` — the flow code does not change.
 
 ## The anchoring seam
 
@@ -83,20 +94,22 @@ const ok = await anchorClient.verify(agent.log.anchorPayload(), receipt);
 src/
   audit/      hash chain core (hash.ts, audit-log.ts) + Article 12 exporters (export.ts)
   anchor/     AnchorClient interface, MockAnchorClient, ConcordiumAnchorClient skeleton
+  x402/       payment layer: types, client state machine, server gate, facilitators, audited bridge
   agent/      AccountableAgent — semantic action helpers over the log
   demo.ts     end-to-end demo scenario
   index.ts    public API
-test/         node:test suites for the chain, exporters, anchor seam, and agent helpers
+test/         node:test suites for the chain, exporters, anchor seam, agent helpers, x402 flow + audit bridge
 ```
 
 ## Status & milestones
 
 - ✅ Hash-chained audit log core + tamper verification + Article 12 exporters — done, tested.
 - ✅ Anchoring interface + mock client + Concordium client skeleton — done, tested.
+- ✅ x402 payment layer (client state machine, server gate, mock + HTTP facilitators, audited bridge with settlement proofs in the chain and the export) — done, tested locally; live settlement awaits deployment config from the owner's wallet step.
 - ⏳ Owner's step: Concordium testnet wallet + identity verification (only the owner can do this).
 - ⏳ Wire the Concordium transport (root-hash anchoring contract calls + CCDExplorer read-back).
 - ⏳ Agent Registry registration + ERC-8004 Agent Card + badge check against the live registry.
-- ⏳ Live x402 payment flow with sponsored transactions.
+- ⏳ Live x402 settlement: real `PaymentSigner` over the agent wallet + production facilitator config.
 - Final submission: 2026-12-09 (platform deadline 2026-12-09 23:59 UTC).
 
 ---
@@ -112,6 +125,8 @@ test/         node:test suites for the chain, exporters, anchor seam, and agent 
 - **担责人只存引用**：日志里只存身份引用（`ownerRef`），不存任何个人数据；零知识属性证明的出示过程本身也作为事件入链（`identity.attribute_proof_presented`）。
 - **第 12 条风格导出**：`exportArticle12Json` / `exportArticle12Text` 输出带完整性结论的记录；链被篡改时导出会明确写 FAILED，绝不替坏链背书。
 
-**运行**：`npm install` → `npm test`（构建 + 25 个测试）→ `npm run demo`（五步演示：查徽章 → 出示属性证明 → x402 收款 → 完成任务 → x402 付款，随后校验、锚定、打印导出）。
+**运行**：`npm install` → `npm test`（构建 + 39 个测试）→ `npm run demo`（五步演示：查徽章 → 出示属性证明 → x402 收款 → 完成任务 → x402 付款，随后校验、锚定、打印导出）。
+
+**x402 支付层（已预建）**：`src/x402/` 实现了完整的付费调用状态机（402 挑战 → EIP-3009 签名授权 → 带付款重试 → facilitator 结算，付款方零 gas，与本项目此前在 Blockchain IQ 上的真实 x402 实证同一套模式）、服务端闸门（金额/过期/重放三查在调 facilitator 之前先行拦截）、mock 与 HTTP 两种 facilitator 客户端，以及审计桥 `AuditedPaymentClient`——每笔结算成功的付款都会带结算凭证（交易哈希等）落进哈希链，第 12 条导出会把凭证打印在对应事件旁。网络/代币/收款地址/签名器全部走配置，缺配置时抛 `X402NotConfiguredError` 逐项列缺，不写死任何占位地址；本地全流程由 mock facilitator + mock signer 跑通并有测试覆盖。
 
 **等用户本人的接缝点**：Concordium 测试网钱包 + 一次身份核验（拿徽章）是唯一需要项目所有者本人完成的步骤；完成前 `ConcordiumAnchorClient` 会以 `AnchorNotConfiguredError` 明确报出缺哪几项配置，完成之后只需在组合点换上真实客户端，核心代码不动。
