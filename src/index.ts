@@ -43,6 +43,14 @@ export {
   type TransferAuthorization,
 } from "./x402/types.js";
 export { MockFacilitatorClient, MockPaymentSigner, newNonce } from "./x402/mock-facilitator.js";
+export {
+  TRANSFER_WITH_AUTHORIZATION_TYPES,
+  ViemPaymentSigner,
+  chainIdFromNetwork,
+  eip712DomainFor,
+  verifyTransferAuthorization,
+  type ViemPaymentSignerConfig,
+} from "./x402/viem-signer.js";
 export { HttpFacilitatorClient, type HttpFacilitatorConfig } from "./x402/facilitator.js";
 export {
   X402PaymentClient,
